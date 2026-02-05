@@ -4,6 +4,7 @@ import cors from 'cors';
 import { verifyBearer, getDb } from './firebaseAdmin.js';
 import { encryptText } from './crypto.js';
 import { createTronAccount, fetchRecentUsdtTransfersTo, usdtToBaseUnits } from './tron.js';
+import { getMerchantAddress, verifyUsdtBep20Transfer } from './bep20.js';
 import { makeRateLimiter } from './rateLimit.js';
 import { consumeCredits, ensureUserDoc, getEntitlements } from './entitlements.js';
 
@@ -139,13 +140,16 @@ app.post('/payments/tron/deposit', async (req, res) => {
   }
 });
 
-// Claim payment (user-triggered) and grant credits
-app.post('/payments/tron/claim', async (req, res) => {
+// Claim payment (user-triggered) and grant credits (BEP20 USDT)
+app.post('/payments/bep20/claim', async (req, res) => {
   try {
     const decoded = await verifyBearer(req);
     const uid = decoded.uid;
 
-    const txidHint = String(req.body?.txid || '').trim();
+    const txid = String(req.body?.txid || '').trim();
+    if (!txid) return res.status(400).json({ error: 'Missing txid' });
+
+    const merchant = getMerchantAddress();
 
     const db = getDb();
     await ensureUserDoc(db, uid);
@@ -154,24 +158,12 @@ app.post('/payments/tron/claim', async (req, res) => {
     const userSnap = await userRef.get();
     const user = userSnap.data() || {};
 
-    const address = String(user.tronDepositAddress || '').trim();
-    if (!address) return res.status(400).json({ error: 'No deposit address yet' });
-
-    const expected = usdtToBaseUnits(PRICE_USDT);
-    const transfers = await fetchRecentUsdtTransfersTo(address, 50);
-
-    const match = transfers.find((t) => {
-      if (txidHint && t.transaction_id !== txidHint) return false;
-      return String(t.to || '').toLowerCase() === address.toLowerCase() && String(t.value || '') === expected;
-    });
-
-    if (!match) {
-      await userRef.set({ tronLastCheckedAt: new Date(), updatedAt: new Date() }, { merge: true });
-      return res.json({ ok: true, paid: false });
+    const check = await verifyUsdtBep20Transfer({ txid, toAddress: merchant, amountUsdt: PRICE_USDT });
+    if (!check.found) {
+      return res.json({ ok: true, paid: false, reason: check.reason || 'not_found' });
     }
 
-    const txid = match.transaction_id;
-    const paymentId = `trc20_${txid}`;
+    const paymentId = `bep20_${txid}`;
     const payRef = db.collection('payments').doc(paymentId);
 
     let didProcess = false;
@@ -191,14 +183,14 @@ app.post('/payments/tron/claim', async (req, res) => {
         payRef,
         {
           uid,
-          chain: 'TRC20',
+          chain: 'BEP20',
           token: 'USDT',
           amountUsdt: PRICE_USDT,
-          amountBaseUnits: expected,
-          toAddress: address,
-          fromAddress: match.from,
+          toAddress: merchant,
+          fromAddress: check.from || null,
           txid,
           status: 'confirmed',
+          blockNumber: check.blockNumber || null,
           createdAt: new Date(),
           updatedAt: new Date(),
         },
@@ -213,7 +205,6 @@ app.post('/payments/tron/claim', async (req, res) => {
           monthlyCreditsAllowance: MONTHLY_CREDITS,
           currentPeriodEnd: new Date(newPeriodEnd),
           lastGrantedPeriodEnd: new Date(newPeriodEnd),
-          tronLastCheckedAt: new Date(),
           updatedAt: new Date(),
         },
         { merge: true }
@@ -232,14 +223,14 @@ app.post('/payments/tron/claim', async (req, res) => {
       tx.set(ledgerRef, {
         type: 'grant',
         amount: MONTHLY_CREDITS,
-        reason: `usdt_trc20_monthly_${PRICE_USDT}`,
+        reason: `usdt_bep20_monthly_${PRICE_USDT}`,
         createdAt: new Date(),
       });
     });
 
     return res.json({ ok: true, paid: true, processed: didProcess, txid });
   } catch (e) {
-    console.error('claim error', e);
+    console.error('bep20 claim error', e);
     res.status(500).json({ error: e?.message || 'Server error' });
   }
 });
