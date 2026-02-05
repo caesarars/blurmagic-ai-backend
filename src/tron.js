@@ -1,6 +1,12 @@
 import TronWebPkg from 'tronweb';
 
-const TronWeb = TronWebPkg?.default || TronWebPkg;
+// tronweb module export shape can vary across runtimes/bundlers.
+// Try common shapes in order.
+const TronWeb =
+  TronWebPkg?.default?.TronWeb ||
+  TronWebPkg?.TronWeb ||
+  TronWebPkg?.default ||
+  TronWebPkg;
 
 export const USDT_TRC20_CONTRACT = process.env.USDT_TRC20_CONTRACT || 'TXLAQ63Xg1NAzckPwKHvzw7CSEmLMEqcdj';
 
@@ -12,6 +18,7 @@ export function tronClient() {
   const apiKey = process.env.TRON_API_KEY || process.env.TRONGRID_API_KEY;
   if (apiKey) headers['TRON-PRO-API-KEY'] = apiKey;
 
+  // TronWeb is a constructor
   return new TronWeb({ fullHost, headers });
 }
 
