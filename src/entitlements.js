@@ -46,10 +46,16 @@ export async function getEntitlements(db, uid) {
   const snap = await ref.get();
   const data = snap.data() || {};
 
-  const plan = String(data.plan || 'free');
+  const rawPlan = String(data.plan || 'free');
   const creditsBalance = Number(data.creditsBalance || 0);
   const subscriptionStatus = data.subscriptionStatus ?? null;
   const currentPeriodEnd = toMillisMaybe(data.currentPeriodEnd);
+
+  const nowMs = Date.now();
+  const isExpired = !!(currentPeriodEnd && nowMs > currentPeriodEnd);
+
+  // If subscription is expired and user has no remaining paid credits, treat as free for gating.
+  const plan = isExpired && creditsBalance <= 0 ? 'free' : rawPlan;
 
   const today = utcDateKey();
   const lastDailyResetDate = String(data.lastDailyResetDate || '');
@@ -68,6 +74,7 @@ export async function getEntitlements(db, uid) {
       dailyLimit: FREE_DAILY_LIMIT,
       subscriptionStatus,
       currentPeriodEnd,
+      subscriptionExpired: isExpired,
     };
   }
 
@@ -82,6 +89,7 @@ export async function getEntitlements(db, uid) {
     dailyLimit: FREE_DAILY_LIMIT,
     subscriptionStatus,
     currentPeriodEnd,
+    subscriptionExpired: isExpired,
   };
 }
 
